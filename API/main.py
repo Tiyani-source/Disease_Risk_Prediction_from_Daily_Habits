@@ -1,27 +1,38 @@
-from typing import Union
-
 from fastapi import FastAPI
 from pydantic import BaseModel
+import joblib
+import numpy as np
 
-app = FastAPI()
+# Load trained model (replace with your own path/model)
+#model = joblib.load("model.pkl")
 
+# Initialize FastAPI
+app = FastAPI(title="ML Prediction API", version="1.0")
 
-class Item(BaseModel):
-    name: str
-    price: float
-    is_offer: Union[bool, None] = None
+# Input schema
+class InputData(BaseModel):
+    features: list[float]
 
-
+# Health check
 @app.get("/")
-def read_root():
-    return {"Hello": "World"}
+def home():
+    return {"message": "Model Prediction API is running!"}
 
+# Prediction endpoint
+@app.post("/predict/")
+def predict(data: InputData):
+    # Convert to numpy array (reshape for single sample)
+    X = np.array(data.features).reshape(1, -1)
+    
+    # Get prediction
+    prediction = model.predict(X)
+    
+    # For probability (if classifier)
+    # proba = model.predict_proba(X).tolist()
+    
+    return {
+        "input": data.features,
+        "prediction": prediction.tolist()
+        # "probabilities": proba
+    }
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None):
-    return {"item_id": item_id, "q": q}
-
-
-@app.put("/items/{item_id}")
-def update_item(item_id: int, item: Item):
-    return {"item_name": item.name, "item_id": item_id}
