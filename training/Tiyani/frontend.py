@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import streamlit.components.v1 as components
+from typing import Dict, Any
 
 # ==============================
 # Page config + CSS styles
@@ -134,7 +135,18 @@ elif st.session_state.step == 1:
             submit = st.form_submit_button("🚀 Predict", use_container_width=True)
 
 
-#
+# ------------------------------
+# Helper: call local FastAPI for prediction
+# ------------------------------
+def get_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        r = requests.post("http://127.0.0.1:8000/predict", json=payload, timeout=20)
+        if not r.ok:
+            return {"error": f"API error {r.status_code}", "detail": r.text}
+        return r.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
+
 # ==============================
 # Submit to FastAPI & render result card
 # ==============================
@@ -213,3 +225,118 @@ if submit:
 
     except requests.exceptions.RequestException as e:
         st.error(f"Request failed: {e}")
+
+# ==============================================================
+# FastAPI backend for Lifestyle Disease Risk Predictor (same file)
+# ==============================================================
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import joblib
+import os
+
+# ------------------------------
+# Load model artifacts
+# ------------------------------
+MODEL_PATH = os.getenv("MODEL_PATH", "xgb_model.pkl")
+FEATS_PATH = os.getenv("FEATS_PATH", "selected_features.pkl")
+THRESH_PATH = os.getenv("THRESH_PATH", "best_threshold.pkl")
+
+# Fallback selected features (reduced 9-feature set)
+FALLBACK_FEATURES = [
+    "sugar_intake","bmi","cholesterol","sleep_hours",
+    "physical_activity","work_hours","blood_pressure",
+    "calorie_intake","water_intake",
+]
+
+# Load model
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    model = None
+    # Streamlit may not be running yet; avoid st.error in API context
+    print(f"[Backend] Failed to load model from {MODEL_PATH}: {e}")
+
+# Load features list, fallback to hardcoded
+try:
+    sel_feats = joblib.load(FEATS_PATH)
+    if not isinstance(sel_feats, (list, tuple)):
+        sel_feats = FALLBACK_FEATURES
+except Exception:
+    sel_feats = FALLBACK_FEATURES
+
+# Load tuned threshold, fallback to 0.5
+try:
+    THRESH = float(joblib.load(THRESH_PATH))
+except Exception:
+    THRESH = 0.5
+
+MODEL_VERSION = os.getenv("MODEL_VERSION", "xgb_red_v1")
+
+# ------------------------------
+# App + CORS
+# ------------------------------
+app = FastAPI(title="Lifestyle Risk API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ------------------------------
+# Defaults for missing fields (kept reasonable)
+# ------------------------------
+DEFAULTS: Dict[str, float] = {
+    "sugar_intake": 50.0,
+    "bmi": 22.0,
+    "cholesterol": 180.0,
+    "sleep_hours": 7.0,
+    "physical_activity": 5.0,
+    "work_hours": 8.0,
+    "blood_pressure": 120.0,
+    "calorie_intake": 2000.0,
+    "water_intake": 2.0,
+}
+
+# ------------------------------
+# Routes
+# ------------------------------
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "features": list(sel_feats),
+        "threshold": float(THRESH),
+        "model_version": MODEL_VERSION,
+        "model_loaded": bool(model is not None),
+    }
+
+@app.post("/predict")
+def predict(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept flexible JSON, fill defaults for missing, and return prediction."""
+    if model is None:
+        return {"error": "model_not_loaded", "detail": f"Missing model at {MODEL_PATH}"}
+
+    data = dict(payload or {})
+
+    # Ensure all required features exist
+    for f in sel_feats:
+        if data.get(f) is None:
+            data[f] = DEFAULTS.get(f, 0.0)
+
+    # Build dataframe in correct order
+    df = pd.DataFrame([data]).reindex(columns=sel_feats, fill_value=0)
+
+    proba = model.predict_proba(df)[:, 1]
+    p = float(proba[0])
+    pred = "At Risk" if p > THRESH else "Healthy"
+
+    return {
+        "prediction": pred,
+        "probability": p,
+        "threshold": float(THRESH),
+        "features_used": list(sel_feats),
+        "model_version": MODEL_VERSION,
+    }
