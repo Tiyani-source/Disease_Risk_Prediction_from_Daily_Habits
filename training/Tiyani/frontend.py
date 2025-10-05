@@ -136,20 +136,20 @@ MODEL_PATH = os.getenv("MODEL_PATH", "xgb_model.pkl")
 FEATS_PATH = os.getenv("FEATS_PATH", "selected_features.pkl")
 THRESH_PATH = os.getenv("THRESH_PATH", "best_threshold.pkl")
 try:
-    model = joblib.load(MODEL_PATH)
+    model = joblib.load("./xgb_model.pkl")
 except Exception as e:
     st.error(f"❌ Failed to load model: {e}")
     st.stop()
 
 try:
-    sel_feats = joblib.load(FEATS_PATH)
+    sel_feats = joblib.load("./selected_features.pkl")
     if not isinstance(sel_feats, (list, tuple)):
         sel_feats = SELECTED_FEATURES
 except Exception:
     sel_feats = SELECTED_FEATURES
 
 try:
-    THRESH = float(joblib.load(THRESH_PATH))
+    THRESH = float(joblib.load("./best_threshold.pkl"))
 except Exception:
     THRESH = 0.5
 
