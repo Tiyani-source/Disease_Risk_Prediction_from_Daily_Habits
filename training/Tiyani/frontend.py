@@ -132,11 +132,13 @@ elif st.session_state.step == 1:
 # ==============================
 # Load model locally
 # ==============================
-MODEL_PATH = os.getenv("MODEL_PATH", "xgb_model.pkl")
+#MODEL_PATH = os.getenv("MODEL_PATH", "xgb_model.pkl")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "xgb_model.pkl")
-FEATS_PATH = os.getenv("FEATS_PATH", "selected_features.pkl")
-THRESH_PATH = os.getenv("THRESH_PATH", "best_threshold.pkl")
+FEATS_PATH  = os.path.join(BASE_DIR, "selected_features.pkl")
+THRESH_PATH = os.path.join(BASE_DIR, "best_threshold.pkl")
+#FEATS_PATH = os.getenv("FEATS_PATH", "selected_features.pkl")
+#THRESH_PATH = os.getenv("THRESH_PATH", "best_threshold.pkl")
 try:
     model = joblib.load(MODEL_PATH)
 except Exception as e:
