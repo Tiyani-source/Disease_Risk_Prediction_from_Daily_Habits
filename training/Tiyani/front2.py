@@ -1,7 +1,6 @@
 import streamlit as st
+import requests
 import pandas as pd
-import joblib
-import os
 import streamlit.components.v1 as components
 from typing import Dict, Any
 
@@ -10,11 +9,11 @@ from typing import Dict, Any
 # ==============================
 st.set_page_config(page_title="Lifestyle Disease Risk Predictor", page_icon="🩺", layout="wide")
 
-PRIMARY = "#22d3ee"
-ACCENT = "#a78bfa"
-GOOD   = "#22c55e"
-WARN   = "#f59e0b"
-DANGER = "#ef4444"
+PRIMARY = "#22d3ee"  # cyan
+ACCENT = "#a78bfa"   # purple
+GOOD   = "#22c55e"   # green
+WARN   = "#f59e0b"   # amber
+DANGER = "#ef4444"   # red
 
 st.markdown(
     f"""
@@ -50,7 +49,7 @@ if "step" not in st.session_state:
     st.session_state.step = 0
 
 # ==============================
-# Ranges for sliders
+# Ranges for sliders (keep within model scope)
 # ==============================
 R = {
     "bmi": (10, 50, 22),
@@ -64,22 +63,25 @@ R = {
     "water_intake": (0, 10, 2),
 }
 
+# Features the reduced XGBoost expects
 SELECTED_FEATURES = [
     "sugar_intake","bmi","cholesterol","sleep_hours",
     "physical_activity","work_hours","blood_pressure",
     "calorie_intake","water_intake"
 ]
 
+# Helper: safely get a value from session_state with sensible defaults
 def _d(key: str):
     if key in st.session_state and st.session_state.get(key) is not None:
         return st.session_state.get(key)
+    # fall back to the default (3rd item) from R if available, else 0
     if key in R and len(R[key]) >= 3:
         return R[key][2]
     return 0
 
 submit = False
 
-# --- Stepper Header ---
+# --- Simple stepper header ---
 step_labels = ["🩺 Vitals", "🧭 Daily Habits"]
 cols = st.columns(2)
 for i, c in enumerate(cols):
@@ -97,10 +99,13 @@ st.markdown("---")
 # ---------- Step 0: Vitals ----------
 if st.session_state.step == 0:
     st.markdown("<div class='section-title'>Vitals</div>", unsafe_allow_html=True)
-    st.session_state.bmi = st.slider("BMI", *R["bmi"])
-    st.session_state.blood_pressure = st.slider("Blood Pressure (systolic mmHg)", *R["blood_pressure"])
-    st.session_state.cholesterol = st.slider("Cholesterol (mg/dL)", *R["cholesterol"])
 
+    # Full-width sliders (no extra empty column)
+    st.session_state.bmi = st.slider("BMI", *R["bmi"])                          # used
+    st.session_state.blood_pressure = st.slider("Blood Pressure (systolic mmHg)", *R["blood_pressure"])  # used
+    st.session_state.cholesterol = st.slider("Cholesterol (mg/dL)", *R["cholesterol"])                  # used
+
+    # Only Next → button (right aligned)
     _, nxt = st.columns([6,1])
     with nxt:
         if st.button("Next →", use_container_width=True):
@@ -113,13 +118,13 @@ elif st.session_state.step == 1:
         st.markdown("<div class='section-title'>Daily Habits</div>", unsafe_allow_html=True)
         h1, h2 = st.columns(2)
         with h1:
-            st.session_state.physical_activity = st.slider("Physical Activity (hours/week)", *R["physical_activity"])
-            st.session_state.work_hours = st.slider("Work Hours (per day)", *R["work_hours"])
-            st.session_state.calorie_intake = st.slider("Daily Calorie Intake", *R["calorie_intake"])
+            st.session_state.physical_activity = st.slider("Physical Activity (hours/week)", *R["physical_activity"])   # used
+            st.session_state.work_hours = st.slider("Work Hours (per day)", *R["work_hours"])                         # used
+            st.session_state.calorie_intake = st.slider("Daily Calorie Intake", *R["calorie_intake"])                 # used
         with h2:
-            st.session_state.sugar_intake = st.slider("Daily Sugar Intake (grams)", *R["sugar_intake"])
-            st.session_state.water_intake = st.slider("Water Intake (liters/day)", *R["water_intake"])
-            st.session_state.sleep_hours = st.slider("Sleep Hours", *R["sleep_hours"])
+            st.session_state.sugar_intake = st.slider("Daily Sugar Intake (grams)", *R["sugar_intake"])               # used
+            st.session_state.water_intake = st.slider("Water Intake (liters/day)", *R["water_intake"])                 # used
+            st.session_state.sleep_hours = st.slider("Sleep Hours", *R["sleep_hours"])                                # used
 
         cols = st.columns([1,1])
         with cols[0]:
@@ -129,37 +134,25 @@ elif st.session_state.step == 1:
         with cols[1]:
             submit = st.form_submit_button("🚀 Predict", use_container_width=True)
 
-# ==============================
-# Load model locally
-# ==============================
-MODEL_PATH = "xgb_model.pkl"
-FEATS_PATH = "selected_features.pkl"
-THRESH_PATH = "best_threshold.pkl"
 
-try:
-    model = joblib.load(MODEL_PATH)
-except Exception as e:
-    st.error(f"❌ Failed to load model: {e}")
-    st.stop()
-
-try:
-    sel_feats = joblib.load(FEATS_PATH)
-    if not isinstance(sel_feats, (list, tuple)):
-        sel_feats = SELECTED_FEATURES
-except Exception:
-    sel_feats = SELECTED_FEATURES
-
-try:
-    THRESH = float(joblib.load(THRESH_PATH))
-except Exception:
-    THRESH = 0.5
-
-MODEL_VERSION = "xgb_red_v1"
+# ------------------------------
+# Helper: call local FastAPI for prediction
+# ------------------------------
+def get_prediction(payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        r = requests.post("http://127.0.0.1:8000/predict", json=payload, timeout=20)
+        if not r.ok:
+            return {"error": f"API error {r.status_code}", "detail": r.text}
+        return r.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
 
 # ==============================
-# Predict directly in Streamlit
+# Submit to FastAPI & render result card
 # ==============================
 if submit:
+    # Anchor to scroll into view
+    st.markdown("<div id='result-anchor'></div>", unsafe_allow_html=True)
     payload = {
         "sugar_intake": _d("sugar_intake"),
         "bmi": _d("bmi"),
@@ -172,52 +165,178 @@ if submit:
         "water_intake": _d("water_intake"),
     }
 
-    df = pd.DataFrame([payload]).reindex(columns=sel_feats, fill_value=0)
-    proba = model.predict_proba(df)[:, 1][0]
-    pred = "At Risk" if proba > THRESH else "Healthy"
+    try:
+        r = requests.post("http://127.0.0.1:8000/predict", json=payload, timeout=20)
+        if not r.ok:
+            st.error(f"API error {r.status_code}: {r.text}")
+        else:
+            res = r.json()
+            prob = float(res.get("probability", 0.0))
+            pred = str(res.get("prediction", "Unknown"))
+            thr  = float(res.get("threshold", 0.5))
+            model_version = res.get("model_version", "-")
+            
+            st.markdown("---")
+            # Color by server-side decision; keep amber for mid band near threshold
+            band = "low" if prob < max(0.33, thr - 0.15) else ("mid" if prob < max(0.66, thr + 0.15) else "high")
+            pill_class = "pill-green" if pred == "Healthy" else ("pill-amber" if band == "mid" else "pill-red")
+            emoji = "🟢" if pred == "Healthy" else ("🟠" if band == "mid" else "🔴")
 
-    st.markdown("---")
-    band = "low" if proba < max(0.33, THRESH - 0.15) else ("mid" if proba < max(0.66, THRESH + 0.15) else "high")
-    pill_class = "pill-green" if pred == "Healthy" else ("pill-amber" if band == "mid" else "pill-red")
-    emoji = "🟢" if pred == "Healthy" else ("🟠" if band == "mid" else "🔴")
-
-    st.markdown(
-        f"""
-        <div class='result'>
-            <div class='pill {pill_class}'>{emoji} {pred}</div>
-            <div style='height:10px'></div>
-            <div style='display:flex; gap:26px; flex-wrap:wrap;'>
-                <div>
-                    <div class='muted'>Risk probability</div>
-                    <div class='metric'>{proba:.1%}</div>
+            st.markdown(
+                f"""
+                <div class='result'>
+                    <div class='pill {pill_class}'>{emoji} {pred}</div>
+                    <div style='height:10px'></div>
+                    <div style='display:flex; gap:26px; flex-wrap:wrap;'>
+                        <div>
+                            <div class='muted'>Risk probability</div>
+                            <div class='metric'>{prob:.1%}</div>
+                        </div>
+                    </div>
                 </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+                """,
+                unsafe_allow_html=True,
+            )
 
-    st.progress(float(min(max(proba, 0.0), 1.0)))
+            st.progress(min(max(prob, 0.0), 1.0))
+            st.caption(f"Model: {model_version}")
 
-    st.caption(f"Model: {MODEL_VERSION}")
+            # Scroll to result anchor on predict
+            components.html(
+                """
+                <script>
+                    const el = parent.document.getElementById('result-anchor');
+                    if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+                </script>
+                """,
+                height=0,
+            )
 
-    components.html(
-        """
-        <script>
-            const el = parent.document.getElementById('result-anchor');
-            if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
-        </script>
-        """,
-        height=0,
-    )
+            st.markdown("### Suggestions (informational, not medical)")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown("**🍽️ Nutrition**\n\nReduce added sugar; prioritize whole foods and fiber.")
+            with c2:
+                st.markdown("**🏃 Activity**\n\nAim for 150+ mins/week moderate activity; increase daily steps.")
+            with c3:
+                st.markdown("**😴 Sleep**\n\nTarget 7–9 hours; keep a consistent schedule and limit screen time at night.")
 
-    st.markdown("### Suggestions (informational, not medical)")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("**🍽️ Nutrition**\n\nReduce added sugar; prioritize whole foods and fiber.")
-    with c2:
-        st.markdown("**🏃 Activity**\n\nAim for 150+ mins/week moderate activity; increase daily steps.")
-    with c3:
-        st.markdown("**😴 Sleep**\n\nTarget 7–9 hours; keep a consistent schedule and limit screen time at night.")
+            st.caption("Disclaimer: This app provides informational insights only and is not a substitute for professional medical advice.")
 
-    st.caption("Disclaimer: This app provides informational insights only and is not a substitute for professional medical advice.")
+    except requests.exceptions.RequestException as e:
+        st.error(f"Request failed: {e}")
+
+# ==============================================================
+# FastAPI backend for Lifestyle Disease Risk Predictor (same file)
+# ==============================================================
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import joblib
+import os
+
+# ------------------------------
+# Load model artifacts
+# ------------------------------
+MODEL_PATH = os.getenv("MODEL_PATH", "xgb_model.pkl")
+FEATS_PATH = os.getenv("FEATS_PATH", "selected_features.pkl")
+THRESH_PATH = os.getenv("THRESH_PATH", "best_threshold.pkl")
+
+# Fallback selected features (reduced 9-feature set)
+FALLBACK_FEATURES = [
+    "sugar_intake","bmi","cholesterol","sleep_hours",
+    "physical_activity","work_hours","blood_pressure",
+    "calorie_intake","water_intake",
+]
+
+# Load model
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    model = None
+    # Streamlit may not be running yet; avoid st.error in API context
+    print(f"[Backend] Failed to load model from {MODEL_PATH}: {e}")
+
+# Load features list, fallback to hardcoded
+try:
+    sel_feats = joblib.load(FEATS_PATH)
+    if not isinstance(sel_feats, (list, tuple)):
+        sel_feats = FALLBACK_FEATURES
+except Exception:
+    sel_feats = FALLBACK_FEATURES
+
+# Load tuned threshold, fallback to 0.5
+try:
+    THRESH = float(joblib.load(THRESH_PATH))
+except Exception:
+    THRESH = 0.5
+
+MODEL_VERSION = os.getenv("MODEL_VERSION", "xgb_red_v1")
+
+# ------------------------------
+# App + CORS
+# ------------------------------
+app = FastAPI(title="Lifestyle Risk API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ------------------------------
+# Defaults for missing fields (kept reasonable)
+# ------------------------------
+DEFAULTS: Dict[str, float] = {
+    "sugar_intake": 50.0,
+    "bmi": 22.0,
+    "cholesterol": 180.0,
+    "sleep_hours": 7.0,
+    "physical_activity": 5.0,
+    "work_hours": 8.0,
+    "blood_pressure": 120.0,
+    "calorie_intake": 2000.0,
+    "water_intake": 2.0,
+}
+
+# ------------------------------
+# Routes
+# ------------------------------
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "features": list(sel_feats),
+        "threshold": float(THRESH),
+        "model_version": MODEL_VERSION,
+        "model_loaded": bool(model is not None),
+    }
+
+@app.post("/predict")
+def predict(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept flexible JSON, fill defaults for missing, and return prediction."""
+    if model is None:
+        return {"error": "model_not_loaded", "detail": f"Missing model at {MODEL_PATH}"}
+
+    data = dict(payload or {})
+
+    # Ensure all required features exist
+    for f in sel_feats:
+        if data.get(f) is None:
+            data[f] = DEFAULTS.get(f, 0.0)
+
+    # Build dataframe in correct order
+    df = pd.DataFrame([data]).reindex(columns=sel_feats, fill_value=0)
+
+    proba = model.predict_proba(df)[:, 1]
+    p = float(proba[0])
+    pred = "At Risk" if p > THRESH else "Healthy"
+
+    return {
+        "prediction": pred,
+        "probability": p,
+        "threshold": float(THRESH),
+        "features_used": list(sel_feats),
+        "model_version": MODEL_VERSION,
+    }
